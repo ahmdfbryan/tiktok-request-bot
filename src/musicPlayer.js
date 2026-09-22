@@ -1,4 +1,3 @@
-import play from 'play-dl';
 import {
   joinVoiceChannel,
   createAudioPlayer,
@@ -6,16 +5,18 @@ import {
   entersState,
   AudioPlayerStatus,
   VoiceConnectionStatus,
+  StreamType,
   NoSubscriberBehavior,
 } from '@discordjs/voice';
 import { takeNextForPlayback, finishPlaying, getCurrentlyPlaying } from './queue.js';
+import { searchVideo, getAudioStream, checkAvailable } from './youtube.js';
 
 /**
  * Music player yang:
  * - Join satu voice channel tetap dan STAY di situ 24/7 (auto-reconnect kalau
  *   terputus), bahkan pas antrian kosong.
  * - Begitu ada request baru & player lagi idle, otomatis cari lagunya di
- *   YouTube lalu diputar.
+ *   YouTube (lewat yt-dlp) lalu diputar.
  * - Begitu satu lagu selesai, otomatis lanjut ke request berikutnya.
  */
 export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
@@ -25,6 +26,7 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
 
   let connection = null;
   let currentRequest = null;
+  let currentProcess = null;
   let skipRequested = false;
   let starting = false;
 
@@ -34,6 +36,13 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
     } catch (err) {
       console.error('[music] Gagal refresh embed:', err.message);
     }
+  }
+
+  function killCurrentProcess() {
+    if (currentProcess && !currentProcess.killed) {
+      currentProcess.kill('SIGKILL');
+    }
+    currentProcess = null;
   }
 
   async function connectVoice() {
@@ -76,6 +85,7 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
 
   player.on(AudioPlayerStatus.Idle, () => {
     if (!currentRequest) return;
+    killCurrentProcess();
     const finished = currentRequest;
     currentRequest = null;
     finishPlaying(finished.id, skipRequested ? 'skipped' : 'played');
@@ -86,6 +96,7 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
 
   player.on('error', (err) => {
     console.error(`[music] Error saat memutar "${currentRequest?.title}":`, err.message);
+    killCurrentProcess();
     if (currentRequest) {
       finishPlaying(currentRequest.id, 'skipped');
       currentRequest = null;
@@ -104,19 +115,22 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
     await refresh();
 
     try {
-      const results = await play.search(next.title, { limit: 1, source: { youtube: 'video' } });
-      const video = results?.[0];
+      const video = await searchVideo(next.title);
       if (!video) throw new Error('Lagu tidak ditemukan di YouTube');
-      if (!video.url) throw new Error(`Hasil pencarian tidak punya URL valid (data: ${JSON.stringify(video).slice(0, 200)})`);
 
-      const streamInfo = await play.stream(video.url);
-      const resource = createAudioResource(streamInfo.stream, { inputType: streamInfo.type });
+      const { stream, process: ytProcess } = getAudioStream(video.url);
+      currentProcess = ytProcess;
+
+      // StreamType.Arbitrary → biar @discordjs/voice otomatis deteksi format
+      // (biasanya webm/opus langsung dari yt-dlp, kalau bukan baru transcode
+      // pakai ffmpeg di belakang layar).
+      const resource = createAudioResource(stream, { inputType: StreamType.Arbitrary });
 
       player.play(resource);
       console.log(`[music] Memutar: "${next.title}" (req by ${next.tiktok_nickname}) → ${video.url}`);
     } catch (err) {
       console.error(`[music] Gagal memutar "${next.title}":`, err.message);
-      console.error(err.stack);
+      killCurrentProcess();
       finishPlaying(next.id, 'skipped');
       currentRequest = null;
       await refresh();
@@ -134,6 +148,7 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
   function skipCurrent() {
     if (!currentRequest) return false;
     skipRequested = true;
+    killCurrentProcess();
     player.stop(true);
     return true;
   }
@@ -151,6 +166,14 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
   }
 
   async function start() {
+    const check = await checkAvailable();
+    if (!check.ok) {
+      console.error('[music] yt-dlp tidak ditemukan/tidak bisa dijalankan! Install dulu: pip install -U yt-dlp');
+      console.error('[music] Fitur play musik dimatikan, tapi bot tetap jalan buat antrian teks.');
+      return;
+    }
+    console.log(`[music] yt-dlp terdeteksi (versi ${check.version})`);
+
     await connectVoice();
     playNext();
   }
