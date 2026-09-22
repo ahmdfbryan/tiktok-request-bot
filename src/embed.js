@@ -3,8 +3,14 @@ import { listPending, listRecent, getCurrentlyPlaying } from './queue.js';
 
 const MAX_ITEMS_SHOWN = 20;
 
-export function buildQueueEmbed() {
-  const nowPlaying = getCurrentlyPlaying();
+/**
+ * @param {object|null} [nowPlayingOverride] - kalau dikasih (dari musicPlayer.nowPlaying()),
+ *   dipakai apa adanya — bisa berupa request asli (punya `id`) atau pick autoplay (id: null).
+ *   Kalau nggak dikasih, fallback baca dari store (queue.getCurrentlyPlaying()).
+ * @param {boolean} [autoplayEnabled] - status autoplay, ditampilkan di footer kalau ada.
+ */
+export function buildQueueEmbed(nowPlayingOverride, autoplayEnabled) {
+  const nowPlaying = nowPlayingOverride !== undefined ? nowPlayingOverride : getCurrentlyPlaying();
   const pending = listPending();
   const recent = listRecent(3);
 
@@ -14,9 +20,10 @@ export function buildQueueEmbed() {
     .setTimestamp(new Date());
 
   if (nowPlaying) {
+    const idSuffix = nowPlaying.id != null ? ` *(id: ${nowPlaying.id})*` : '';
     embed.addFields({
       name: '🔊 Sedang diputar',
-      value: `**${escapeMd(nowPlaying.title)}** — req by \`${escapeMd(nowPlaying.tiktok_nickname)}\` *(id: ${nowPlaying.id})*`,
+      value: `**${escapeMd(nowPlaying.title)}** — req by \`${escapeMd(nowPlaying.tiktok_nickname)}\`${idSuffix}`,
     });
   }
 
@@ -33,7 +40,6 @@ export function buildQueueEmbed() {
       lines.push(`\n…dan ${pending.length - MAX_ITEMS_SHOWN} request lainnya`);
     }
     embed.setDescription(lines.join('\n'));
-    embed.setFooter({ text: `Menunggu diputar: ${pending.length}` });
   }
 
   if (recent.length > 0) {
@@ -43,6 +49,11 @@ export function buildQueueEmbed() {
     });
     embed.addFields({ name: 'Baru saja', value: recentLines.join('\n') });
   }
+
+  const footerParts = [];
+  if (pending.length > 0) footerParts.push(`Menunggu diputar: ${pending.length}`);
+  if (autoplayEnabled !== undefined) footerParts.push(`Autoplay: ${autoplayEnabled ? 'ON 🔀' : 'OFF'}`);
+  if (footerParts.length > 0) embed.setFooter({ text: footerParts.join(' • ') });
 
   return embed;
 }
