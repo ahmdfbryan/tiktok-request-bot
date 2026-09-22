@@ -56,7 +56,7 @@ export function createDiscordBot({
       }
     }
 
-    queueMessage = await channel.send({ embeds: [buildQueueEmbed()] });
+    queueMessage = await channel.send({ embeds: [buildQueueEmbed(musicPlayer?.nowPlaying(), musicPlayer?.isAutoplayEnabled())] });
     setSetting(QUEUE_MSG_KEY, queueMessage.id);
     return queueMessage;
   }
@@ -64,7 +64,7 @@ export function createDiscordBot({
   async function doRefreshQueueEmbed() {
     try {
       if (!queueMessage) await ensureQueueMessage();
-      await queueMessage.edit({ embeds: [buildQueueEmbed()] });
+      await queueMessage.edit({ embeds: [buildQueueEmbed(musicPlayer?.nowPlaying(), musicPlayer?.isAutoplayEnabled())] });
     } catch (err) {
       console.error('[discord] Gagal update embed antrian, membuat pesan baru:', err?.message || err);
       queueMessage = null;
@@ -240,9 +240,21 @@ export function createDiscordBot({
     musicPlayer?.notifyNewRequest();
   }
 
+  /**
+   * Dipanggil oleh listener TikTok saat streamer komen "!autoplay on/off".
+   */
+  function handleAutoplayCommand({ enabled }) {
+    if (!musicPlayer) {
+      console.log('[music] Command !autoplay diabaikan — DISCORD_VOICE_CHANNEL_ID belum diisi.');
+      return;
+    }
+    musicPlayer.setAutoplay(enabled);
+    refreshQueueEmbed();
+  }
+
   async function start() {
     await client.login(token);
   }
 
-  return { client, start, handleTikTokRequest, refreshQueueEmbed };
+  return { client, start, handleTikTokRequest, handleAutoplayCommand, refreshQueueEmbed };
 }
