@@ -107,6 +107,7 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
       const results = await play.search(next.title, { limit: 1, source: { youtube: 'video' } });
       const video = results?.[0];
       if (!video) throw new Error('Lagu tidak ditemukan di YouTube');
+      if (!video.url) throw new Error(`Hasil pencarian tidak punya URL valid (data: ${JSON.stringify(video).slice(0, 200)})`);
 
       const streamInfo = await play.stream(video.url);
       const resource = createAudioResource(streamInfo.stream, { inputType: streamInfo.type });
@@ -115,6 +116,7 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
       console.log(`[music] Memutar: "${next.title}" (req by ${next.tiktok_nickname}) → ${video.url}`);
     } catch (err) {
       console.error(`[music] Gagal memutar "${next.title}":`, err.message);
+      console.error(err.stack);
       finishPlaying(next.id, 'skipped');
       currentRequest = null;
       await refresh();
