@@ -9,7 +9,11 @@ import {
   NoSubscriberBehavior,
 } from '@discordjs/voice';
 import { takeNextForPlayback, finishPlaying, getCurrentlyPlaying } from './queue.js';
-import { searchVideo, getAudioStream, checkAvailable } from './youtube.js';
+import { searchVideo, getAudioStream, getAutoplayNext, checkAvailable } from './youtube.js';
+import { getSetting, setSetting } from './settings.js';
+
+const AUTOPLAY_SETTING_KEY = 'autoplay_enabled';
+const MAX_AUTOPLAY_HISTORY = 15;
 
 /**
  * Music player yang:
@@ -18,6 +22,8 @@ import { searchVideo, getAudioStream, checkAvailable } from './youtube.js';
  * - Begitu ada request baru & player lagi idle, otomatis cari lagunya di
  *   YouTube (lewat yt-dlp) lalu diputar.
  * - Begitu satu lagu selesai, otomatis lanjut ke request berikutnya.
+ * - Kalau autoplay aktif & antrian request kosong, otomatis lanjut mutar lagu
+ *   "mirip" (mode radio/mix YouTube) biar voice channel nggak sepi.
  */
 export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
   const player = createAudioPlayer({
@@ -25,10 +31,27 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
   });
 
   let connection = null;
-  let currentRequest = null;
+  let currentRequest = null; // request asli dari store, ATAU objek "virtual" autoplay (tidak punya id)
   let currentProcess = null;
   let skipRequested = false;
   let starting = false;
+
+  let lastPlayedVideoId = null;
+  const recentAutoplayIds = [];
+
+  function isAutoplayEnabled() {
+    return getSetting(AUTOPLAY_SETTING_KEY) === 'on';
+  }
+
+  function setAutoplay(enabled) {
+    setSetting(AUTOPLAY_SETTING_KEY, enabled ? 'on' : 'off');
+    if (enabled) notifyNewRequest(); // kalau lagi nganggur, langsung coba mulai autoplay
+  }
+
+  function rememberAutoplayId(id) {
+    recentAutoplayIds.push(id);
+    while (recentAutoplayIds.length > MAX_AUTOPLAY_HISTORY) recentAutoplayIds.shift();
+  }
 
   async function refresh() {
     try {
@@ -88,7 +111,10 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
     killCurrentProcess();
     const finished = currentRequest;
     currentRequest = null;
-    finishPlaying(finished.id, skipRequested ? 'skipped' : 'played');
+    if (finished.id != null) {
+      // request asli dari antrian TikTok
+      finishPlaying(finished.id, skipRequested ? 'skipped' : 'played');
+    }
     skipRequested = false;
     refresh();
     playNext();
@@ -98,17 +124,68 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
     console.error(`[music] Error saat memutar "${currentRequest?.title}":`, err.message);
     killCurrentProcess();
     if (currentRequest) {
-      finishPlaying(currentRequest.id, 'skipped');
+      if (currentRequest.id != null) finishPlaying(currentRequest.id, 'skipped');
       currentRequest = null;
       refresh();
     }
     playNext();
   });
 
+  function playResource(video) {
+    const { stream, process: ytProcess } = getAudioStream(video.url);
+    currentProcess = ytProcess;
+
+    // StreamType.Arbitrary → biar @discordjs/voice otomatis deteksi format
+    // (biasanya webm/opus langsung dari yt-dlp, kalau bukan baru transcode
+    // pakai ffmpeg di belakang layar).
+    const resource = createAudioResource(stream, { inputType: StreamType.Arbitrary });
+    player.play(resource);
+    lastPlayedVideoId = video.id || lastPlayedVideoId;
+  }
+
+  async function tryPlayAutoplay() {
+    const pick = await getAutoplayNext(lastPlayedVideoId, recentAutoplayIds);
+    if (!pick) {
+      console.log('[music] Autoplay aktif tapi nggak nemu lagu lanjutan, bot diam dulu.');
+      starting = false;
+      return;
+    }
+
+    currentRequest = {
+      id: null,
+      title: pick.title,
+      tiktok_nickname: '🔀 Autoplay',
+      status: 'playing',
+    };
+    await refresh();
+
+    try {
+      playResource(pick);
+      rememberAutoplayId(pick.id);
+      console.log(`[music] Autoplay memutar: "${pick.title}" → ${pick.url}`);
+    } catch (err) {
+      console.error(`[music] Autoplay gagal memutar "${pick.title}":`, err.message);
+      currentRequest = null;
+      await refresh();
+      starting = false;
+      playNext();
+      return;
+    }
+    starting = false;
+  }
+
   async function playNext() {
     if (starting || currentRequest) return; // sudah ada yang jalan / lagi proses start
     const next = takeNextForPlayback();
-    if (!next) return; // antrian kosong, bot tetap stay di voice channel
+
+    if (!next) {
+      // Antrian request kosong. Kalau autoplay nyala, coba lanjut mode radio.
+      if (isAutoplayEnabled() && lastPlayedVideoId) {
+        starting = true;
+        await tryPlayAutoplay();
+      }
+      return; // kalau autoplay mati / belum ada lagu sebelumnya, bot tetap stay diam
+    }
 
     starting = true;
     currentRequest = next;
@@ -118,15 +195,7 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
       const video = await searchVideo(next.title);
       if (!video) throw new Error('Lagu tidak ditemukan di YouTube');
 
-      const { stream, process: ytProcess } = getAudioStream(video.url);
-      currentProcess = ytProcess;
-
-      // StreamType.Arbitrary → biar @discordjs/voice otomatis deteksi format
-      // (biasanya webm/opus langsung dari yt-dlp, kalau bukan baru transcode
-      // pakai ffmpeg di belakang layar).
-      const resource = createAudioResource(stream, { inputType: StreamType.Arbitrary });
-
-      player.play(resource);
+      playResource(video);
       console.log(`[music] Memutar: "${next.title}" (req by ${next.tiktok_nickname}) → ${video.url}`);
     } catch (err) {
       console.error(`[music] Gagal memutar "${next.title}":`, err.message);
@@ -173,10 +242,20 @@ export function createMusicPlayer({ client, voiceChannelId, onQueueChange }) {
       return;
     }
     console.log(`[music] yt-dlp terdeteksi (versi ${check.version})`);
+    console.log(`[music] Autoplay: ${isAutoplayEnabled() ? 'ON' : 'OFF'}`);
 
     await connectVoice();
     playNext();
   }
 
-  return { start, notifyNewRequest, skipCurrent, pause, resume, nowPlaying };
+  return {
+    start,
+    notifyNewRequest,
+    skipCurrent,
+    pause,
+    resume,
+    nowPlaying,
+    setAutoplay,
+    isAutoplayEnabled,
+  };
 }
