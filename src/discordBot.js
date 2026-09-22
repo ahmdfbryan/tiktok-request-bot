@@ -61,7 +61,7 @@ export function createDiscordBot({
     return queueMessage;
   }
 
-  async function refreshQueueEmbed() {
+  async function doRefreshQueueEmbed() {
     try {
       if (!queueMessage) await ensureQueueMessage();
       await queueMessage.edit({ embeds: [buildQueueEmbed()] });
@@ -70,6 +70,17 @@ export function createDiscordBot({
       queueMessage = null;
       await ensureQueueMessage();
     }
+  }
+
+  // Serialize semua pemanggilan refreshQueueEmbed() supaya nggak ada beberapa
+  // proses yang bareng-bareng nyoba "benerin" pesan yang sama dan malah bikin
+  // beberapa pesan baru sekaligus (race condition).
+  let refreshChain = Promise.resolve();
+  function refreshQueueEmbed() {
+    refreshChain = refreshChain.then(doRefreshQueueEmbed).catch((err) => {
+      console.error('[discord] refreshQueueEmbed gagal total:', err?.message || err);
+    });
+    return refreshChain;
   }
 
   const musicPlayer = voiceChannelId
