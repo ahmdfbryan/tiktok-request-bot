@@ -18,6 +18,7 @@ const DISCORD_VOICE_CHANNEL_ID = process.env.DISCORD_VOICE_CHANNEL_ID || null;
 const DISCORD_STAFF_ROLE_ID = process.env.DISCORD_STAFF_ROLE_ID || null;
 const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID || null;
 const REQUEST_COMMAND = process.env.REQUEST_COMMAND || '!request';
+const AUTOPLAY_COMMAND = process.env.AUTOPLAY_COMMAND || '!autoplay';
 const MAX_PENDING_PER_USER = Number(process.env.MAX_PENDING_PER_USER || 3);
 const MAX_TITLE_LENGTH = Number(process.env.MAX_TITLE_LENGTH || 100);
 
@@ -41,10 +42,14 @@ async function main() {
   startTikTokListener({
     username: TIKTOK_USERNAME,
     commandPrefix: REQUEST_COMMAND,
+    autoplayCommand: AUTOPLAY_COMMAND,
     onRequest: (req) => {
       bot.handleTikTokRequest(req).catch((err) => {
         console.error('[bot] Gagal memproses request:', err);
       });
+    },
+    onAutoplayCommand: (payload) => {
+      bot.handleAutoplayCommand(payload);
     },
     onStateChange: (state) => {
       if (state.connected) {
