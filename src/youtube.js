@@ -62,10 +62,54 @@ export async function searchVideo(query) {
   if (!url) return null;
 
   return {
+    id: data.id || null,
     title: data.title || query,
     url,
     durationSec: data.duration || 0,
   };
+}
+
+/**
+ * Ambil 1 video "lanjutan" dari YouTube Mix/radio berdasarkan video terakhir
+ * yang diputar — dipakai buat fitur autoplay (lanjut mutar lagu mirip pas
+ * antrian request kosong).
+ *
+ * @param {string} seedVideoId - ID video YouTube yang baru saja diputar
+ * @param {string[]} excludeIds - ID video yang mau dihindari (misal yang baru aja diputar autoplay, biar nggak muter-muter itu-itu aja)
+ * @returns {Promise<{ id: string, title: string, url: string } | null>}
+ */
+export async function getAutoplayNext(seedVideoId, excludeIds = []) {
+  if (!seedVideoId) return null;
+
+  const mixUrl = `https://www.youtube.com/watch?v=${seedVideoId}&list=RD${seedVideoId}`;
+  const stdout = await runYtDlpJson([
+    '-j',
+    '--flat-playlist',
+    '--no-warnings',
+    mixUrl,
+  ]);
+
+  const exclude = new Set([seedVideoId, ...excludeIds]);
+  const lines = stdout.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('{'));
+
+  for (const line of lines) {
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const id = entry.id;
+    if (!id || exclude.has(id)) continue;
+
+    return {
+      id,
+      title: entry.title || 'Lagu autoplay',
+      url: `https://www.youtube.com/watch?v=${id}`,
+    };
+  }
+
+  return null;
 }
 
 /**
