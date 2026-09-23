@@ -228,10 +228,12 @@ export function createDiscordBot({
     const trimmedTitle = title.trim().slice(0, maxTitleLength);
     if (!trimmedTitle) return;
 
-    const pendingCount = countPendingForUser(tiktokUsername);
-    if (pendingCount >= maxPendingPerUser) {
-      console.log(`[tiktok] @${tiktokUsername} sudah punya ${pendingCount} request pending, request baru diabaikan.`);
-      return;
+    if (maxPendingPerUser > 0) {
+      const pendingCount = countPendingForUser(tiktokUsername);
+      if (pendingCount >= maxPendingPerUser) {
+        console.log(`[tiktok] @${tiktokUsername} sudah punya ${pendingCount} request pending, request baru diabaikan.`);
+        return;
+      }
     }
 
     const req = addRequest({ tiktokUsername, tiktokNickname, title: trimmedTitle });
